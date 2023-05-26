@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+namespace fs = std::filesystem;
+
 uint64_t computeDHash(const cv::Mat &img) {
   cv::Mat resizedImg, grayImg;
   cv::resize(img, resizedImg, cv::Size(9, 8));
@@ -61,8 +63,10 @@ std::vector<std::set<std::string>> getSimilaritySets(const std::string &path,
 
   // List all image files under the given path.
   std::vector<std::string> imageFiles;
-  for (const auto &entry : std::filesystem::directory_iterator(path)) {
-    if (entry.is_regular_file() && isImageFile(entry.path().string())) {
+  for (const auto &entry : fs::recursive_directory_iterator(
+           path, fs::directory_options::skip_permission_denied)) {
+    if (entry.is_regular_file() && !fs::is_symlink(entry) &&
+        isImageFile(entry.path().string())) {
       imageFiles.push_back(entry.path().string());
     }
   }
