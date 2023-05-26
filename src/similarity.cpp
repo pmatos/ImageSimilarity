@@ -41,27 +41,6 @@ double compareImagesHashed(const cv::Mat &img1, const cv::Mat &img2) {
   return 1.0 - static_cast<double>(distance) / 64.0;
 }
 
-double compareImages(const cv::Mat &img1, const cv::Mat &img2) {
-  if (img1.empty() || img2.empty()) {
-    std::cerr << "Error: Empty input image(s)" << std::endl;
-    return 0.0;
-  }
-
-  cv::Mat resizedImg1, resizedImg2, grayImg1, grayImg2, diff;
-
-  cv::resize(img1, resizedImg1, cv::Size(256, 256));
-  cv::resize(img2, resizedImg2, cv::Size(256, 256));
-
-  cv::cvtColor(resizedImg1, grayImg1, cv::COLOR_BGR2GRAY);
-  cv::cvtColor(resizedImg2, grayImg2, cv::COLOR_BGR2GRAY);
-
-  cv::absdiff(grayImg1, grayImg2, diff);
-  int totalPixels = diff.rows * diff.cols;
-  int matchingPixels = totalPixels - cv::countNonZero(diff);
-
-  return static_cast<double>(matchingPixels) / totalPixels;
-}
-
 bool isImageFile(const std::string &filename) {
   std::vector<std::string> extensions = {".jpg", ".jpeg", ".png", ".bmp",
                                          ".tiff"};
@@ -140,9 +119,7 @@ int main(int argc, char *argv[]) {
 
     cv::Mat img1 = cv::imread(argv[2]);
     cv::Mat img2 = cv::imread(argv[3]);
-    double similarity = compareImages(img1, img2);
     double similarityHashed = compareImagesHashed(img1, img2);
-    std::cout << "Similarity: " << similarity << std::endl;
     std::cout << "Similarity (hashed): " << similarityHashed << std::endl;
   } else {
     // Default mode
