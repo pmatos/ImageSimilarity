@@ -57,9 +57,9 @@ bool isImageFile(const std::string &filename) {
   return false;
 }
 
-std::vector<std::set<std::string>> getSimilaritySets(const std::string &path,
-                                                     double threshold) {
-  std::vector<std::set<std::string>> similaritySets;
+std::vector<std::vector<std::string>> getSimilaritySets(const std::string &path,
+                                                        double threshold) {
+  std::vector<std::vector<std::string>> similaritySets;
 
   // List all image files under the given path.
   std::vector<std::string> imageFiles;
@@ -70,33 +70,44 @@ std::vector<std::set<std::string>> getSimilaritySets(const std::string &path,
       imageFiles.push_back(entry.path().string());
     }
   }
+  std::cout << "Found " << imageFiles.size() << " image files.\n";
 
   // Compare every pair of images.
   for (const auto &imgPath1 : imageFiles) {
     cv::Mat img1 = cv::imread(imgPath1);
     bool addedToSet = false;
 
+    std::cout << ".";
+    std::cout.flush();
+    // Instead of comparing imgPath1 with all images in the set, we
+    // compare it with just a random image in the set.
     for (auto &similaritySet : similaritySets) {
-      for (const auto &imgPath2 : similaritySet) {
-        cv::Mat img2 = cv::imread(imgPath2);
-        double similarity = compareImagesHashed(img1, img2);
+      std::cout << "@";
+      std::cout.flush();
 
-        if (similarity >= threshold) {
-          similaritySet.insert(imgPath1);
-          addedToSet = true;
-          break;
-        }
-      }
+      size_t sz = similaritySet.size();
+      size_t randIndex = std::rand() % sz;
+      auto it = similaritySet.begin();
+      std::advance(it, randIndex);
+      const auto &imgPath2 = *it;
 
-      if (addedToSet) {
+      cv::Mat img2 = cv::imread(imgPath2);
+      double similarity = compareImagesHashed(img1, img2);
+
+      if (similarity >= threshold) {
+        similaritySet.emplace_back(imgPath1);
+        addedToSet = true;
         break;
       }
     }
 
     // If the image was not added to any existing set, create a new set for it.
     if (!addedToSet) {
-      std::set<std::string> newSet = {imgPath1};
-      similaritySets.push_back(newSet);
+      std::cout << "!";
+      std::cout.flush();
+      std::vector<std::string> newSet;
+      newSet.emplace_back(imgPath1);
+      similaritySets.emplace_back(newSet);
     }
   }
 
@@ -140,8 +151,7 @@ int main(int argc, char *argv[]) {
     }
 
     std::string path = argv[2];
-    std::vector<std::set<std::string>> similaritySets =
-        getSimilaritySets(path, threshold);
+    auto similaritySets = getSimilaritySets(path, threshold);
 
     // Print the similarity sets
     int setIndex = 1;
