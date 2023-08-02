@@ -47,26 +47,25 @@ uint64_t computeDHash(const cv::Mat &img) {
 
 class Image {
 public:
-  Image(const std::string &Path) : Path(Path) {
-    ImgData = cv::imread(Path);
+  Image(const std::string &Path) : Path(Path), isEmpty(false) {
+    cv::Mat ImgData = cv::imread(Path);
     if (ImgData.empty()) {
       std::cerr << "Warning: Could not load image " << Path << "\n";
       Hash = 0;
+      isEmpty = true;
     } else
       Hash = computeDHash(ImgData);
+    ImgData.release();
   }
 
-  ~Image() {
-    ImgData.release();
-    Path.clear();
-  }
+  ~Image() { Path.clear(); }
 
   inline uint64_t getHash() const { return Hash; }
   inline const std::string &getPath() const { return Path; }
-  inline bool empty() const { return ImgData.empty(); }
+  inline bool empty() const { return isEmpty; }
 
 private:
-  cv::Mat ImgData;
+  bool isEmpty;
   std::string Path;
   uint64_t Hash;
 };
