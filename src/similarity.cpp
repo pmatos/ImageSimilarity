@@ -116,13 +116,18 @@ std::vector<std::vector<std::string>> getSimilaritySets(const std::string &path,
   }
   std::cout << "Found " << imageFiles.size() << " image files.\n";
 
-  // Compare every pair of images.
+  // Compare every image with a random image in the existing sets.
   for (const auto &img1 : imageFiles) {
+    const auto start = std::chrono::steady_clock::now();
+    std::cout << "Comparing " << img1.getPath() << std::endl;
     bool addedToSet = false;
 
     // Instead of comparing imgPath1 with all images in the set, we
     // compare it with just a random image in the set.
+    std::cout << "Sets: ";
     for (auto &similaritySet : similaritySets) {
+      if (similaritySet.size() > 1)
+        std::cout << similaritySet.size() << " ";
       size_t sz = similaritySet.size();
       size_t randIndex = std::rand() % sz;
       auto it = similaritySet.begin();
@@ -144,6 +149,12 @@ std::vector<std::vector<std::string>> getSimilaritySets(const std::string &path,
       newSet.push_back(img1.getPath());
       similaritySets.emplace_back(newSet);
     }
+    const auto end = std::chrono::steady_clock::now();
+    std::cout << "Took "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(end -
+                                                                       start)
+                     .count()
+              << "ms" << std::endl;
   }
 
   return similaritySets;
@@ -153,7 +164,7 @@ int main(int argc, char *argv[]) {
   if (argc < 3) {
     std::cerr << "Usage: \n"
               << "Similarity mode: ImageSimilarity -s img1_path img2_path\n"
-              << "Default mode: ImageSimilarity images_path\n";
+              << "Default mode: ImageSimilarity <threshold> images_path\n";
     return 1;
   }
 
