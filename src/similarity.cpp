@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
+#include <libexif/exif-data.h>
 #include <opencv2/core/mat.hpp>
 #include <opencv2/opencv.hpp>
 #include <set>
@@ -10,6 +11,33 @@
 #include <vector>
 
 namespace fs = std::filesystem;
+
+template <typename T> class TMatrix {
+private:
+  std::vector<T> data;
+  size_t size;
+
+public:
+  TMatrix(size_t n) : size(n) {
+    // Calculate the number of elements needed to store the lower triangular
+    // matrix without diagonal.
+    data.resize(n * (n - 1) / 2);
+  }
+
+  // Access element (i, j) in the lower triangular matrix
+  T &operator()(size_t i, size_t j) {
+    assert(i < size && j < size && i != j && j > i);
+
+    return data[j * (j - 1) / 2 + i];
+  }
+
+  // Access element (i, j) in the lower triangular matrix (const version)
+  const T &operator()(size_t i, size_t j) const {
+    assert(i < size && j < size && i != j && j > i);
+
+    return data[j * (j + 1) / 2 + i];
+  }
+};
 
 class Timer {
 public:
@@ -43,6 +71,61 @@ uint64_t computeDHash(const cv::Mat &img) {
     }
   }
   return hash;
+}
+
+std::map<std::string, std::string> extractMetadata(const std::string &path) {
+  std::map<std::string, std::string> metadata;
+
+  ExifData *exifData = exif_data_new_from_file(path.c_str());
+  if (exifData) {
+    for (int i = 0; i < EXIF_IFD_COUNT; ++i) {
+      ExifContent *content = exifData->ifd[i];
+      if (content) {
+        exif_content_foreach_entry(
+            content,
+            [](ExifEntry *entry, void *user_data) {
+              char buf[1024];
+              if (exif_entry_get_value(entry, buf, sizeof(buf)) &&
+                  buf[0] != '\0') {
+                std::string tag_name = exif_tag_get_name(entry->tag);
+                auto &metadata_map =
+                    *reinterpret_cast<std::map<std::string, std::string> *>(
+                        user_data);
+                metadata_map[tag_name] = buf;
+              }
+            },
+            &metadata); // Pass the address of metadata as user_data
+      }
+    }
+    exif_data_unref(exifData);
+  }
+
+  return metadata;
+}
+
+void compareMetadata(const std::string &path1, const std::string &path2) {
+  auto metadata1 = extractMetadata(path1);
+  auto metadata2 = extractMetadata(path2);
+
+  std::cout << "Comparing metadata between " << path1 << " and " << path2
+            << ":\n";
+
+  for (const auto &[key, value] : metadata1) {
+    if (metadata2.find(key) != metadata2.end() && metadata2[key] != value) {
+      std::cout << "  Mismatch in " << key << ": " << path1 << " has " << value
+                << ", " << path2 << " has " << metadata2[key] << "\n";
+    }
+  }
+
+  int count1 = metadata1.size();
+  int count2 = metadata2.size();
+
+  if (count1 > count2)
+    std::cout << path1 << " has more complete metadata.\n";
+  else if (count2 > count1)
+    std::cout << path2 << " has more complete metadata.\n";
+  else
+    std::cout << "Both files have the same amount of metadata.\n";
 }
 
 class Image {
@@ -99,65 +182,55 @@ bool isImageFile(const std::string &filename) {
   return false;
 }
 
-std::vector<std::vector<std::string>> getSimilaritySets(const std::string &path,
-                                                        double threshold) {
-  std::vector<std::vector<std::string>> similaritySets;
+void printSimilaritySets(const std::string &path, double threshold) {
 
   // List all image files under the given path.
   std::vector<Image> imageFiles;
-  for (const auto &entry : fs::recursive_directory_iterator(
-           path, fs::directory_options::skip_permission_denied)) {
-    if (entry.is_regular_file() && !fs::is_symlink(entry) &&
-        isImageFile(entry.path().string())) {
-      if (imageFiles.size() % 100 == 0)
-        std::cout << "Loaded " << imageFiles.size() << " image files.\n";
-      imageFiles.emplace_back(entry.path().string());
-    }
-  }
-  std::cout << "Found " << imageFiles.size() << " image files.\n";
-
-  // Compare every image with a random image in the existing sets.
-  for (const auto &img1 : imageFiles) {
-    const auto start = std::chrono::steady_clock::now();
-    std::cout << "Comparing " << img1.getPath() << std::endl;
-    bool addedToSet = false;
-
-    // Instead of comparing imgPath1 with all images in the set, we
-    // compare it with just a random image in the set.
-    std::cout << "Sets: ";
-    for (auto &similaritySet : similaritySets) {
-      if (similaritySet.size() > 1)
-        std::cout << similaritySet.size() << " ";
-      size_t sz = similaritySet.size();
-      size_t randIndex = std::rand() % sz;
-      auto it = similaritySet.begin();
-      std::advance(it, randIndex);
-      const auto &img2 = *it;
-      double similarity = compareImagesHashed(img1, img2);
-
-      if (similarity >= threshold) {
-        similaritySet.emplace_back(img1.getPath());
-        addedToSet = true;
-        break;
+  {
+    TIME_BLOCK("File Loading");
+    for (const auto &entry : fs::recursive_directory_iterator(
+             path, fs::directory_options::skip_permission_denied)) {
+      if (entry.is_regular_file() && !fs::is_symlink(entry) &&
+          isImageFile(entry.path().string())) {
+        if (imageFiles.size() % 100 == 0)
+          std::cout << "Loaded " << imageFiles.size() << " image files.\n";
+        imageFiles.emplace_back(entry.path().string());
       }
     }
-
-    // If the image was not added to any existing set, create a new set for
-    // it.
-    if (!addedToSet) {
-      std::vector<std::string> newSet;
-      newSet.push_back(img1.getPath());
-      similaritySets.emplace_back(newSet);
-    }
-    const auto end = std::chrono::steady_clock::now();
-    std::cout << "Took "
-              << std::chrono::duration_cast<std::chrono::milliseconds>(end -
-                                                                       start)
-                     .count()
-              << "ms" << std::endl;
+    std::cout << "Found " << imageFiles.size() << " image files.\n";
   }
 
-  return similaritySets;
+  // Compare every image with a random image in the existing sets.
+  TMatrix<double> M(imageFiles.size());
+  for (size_t i = 0; i < imageFiles.size() - 1; ++i) {
+    const auto &img1 = imageFiles[i];
+    TIME_BLOCK("File Analysis: " + img1.getPath());
+
+    for (size_t j = i + 1; j < imageFiles.size(); ++j) {
+      const auto &img2 = imageFiles[j];
+      double similarity = compareImagesHashed(img1, img2);
+      M(i, j) = similarity;
+    }
+  }
+
+  // Print similarities
+  {
+    TIME_BLOCK("Display Similarities");
+    for (size_t i = 0; i < imageFiles.size(); i++) {
+      bool headerPrinted = false;
+      for (size_t j = i + 1; j < imageFiles.size(); j++) {
+        if (M(i, j) > threshold) {
+          if (!headerPrinted) {
+            std::cout << imageFiles[i].getPath() << std::endl;
+            headerPrinted = true;
+          }
+          std::cout << "    =" << imageFiles[j].getPath() << " : " << M(i, j)
+                    << std::endl;
+          compareMetadata(imageFiles[i].getPath(), imageFiles[j].getPath());
+        }
+      }
+    }
+  }
 }
 
 int main(int argc, char *argv[]) {
@@ -197,16 +270,7 @@ int main(int argc, char *argv[]) {
     }
 
     std::string path = argv[2];
-    auto similaritySets = getSimilaritySets(path, threshold);
-
-    // Print the similarity sets
-    int setIndex = 1;
-    for (const auto &similaritySet : similaritySets) {
-      std::cout << "Set " << setIndex++ << ":" << std::endl;
-      for (const auto &imgPath : similaritySet) {
-        std::cout << "  " << imgPath << std::endl;
-      }
-    }
+    printSimilaritySets(path, threshold);
   }
 
   return 0;
