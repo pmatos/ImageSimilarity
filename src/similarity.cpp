@@ -138,6 +138,7 @@ public:
       isEmpty = true;
     } else
       Hash = computeDHash(ImgData);
+    Resolution = ImgData.total();
     ImgData.release();
   }
 
@@ -145,12 +146,23 @@ public:
 
   inline uint64_t getHash() const { return Hash; }
   inline const std::string &getPath() const { return Path; }
+  inline const std::string getExtension() const {
+    std::filesystem::path p(Path);
+    return p.extension().string();
+  }
+  inline const std::string getFilename() const {
+    std::filesystem::path p(Path);
+    return p.filename().string();
+  }
+
   inline bool empty() const { return isEmpty; }
+  inline size_t getResolution() const { return Resolution; }
 
 private:
   bool isEmpty;
   std::string Path;
   uint64_t Hash;
+  size_t Resolution;
 };
 
 int hammingDistance(uint64_t hash1, uint64_t hash2) {
@@ -169,21 +181,55 @@ double compareImagesHashed(const Image &img1, const Image &img2) {
 }
 
 bool isImageFile(const std::string &filename) {
-  std::vector<std::string> extensions = {".jpg", ".jpeg", ".png", ".bmp",
-                                         ".tiff"};
+  std::vector<std::string> extensions = {".jpg", ".jpeg", ".png",
+                                         ".bmp", ".tiff", ".tif"};
+  std::filesystem::path p(filename);
+  std::filesystem::path ext = p.extension();
 
+  // Case-insensitive comparison of the extension.
+  std::string extStr = ext.string();
+  transform(extStr.begin(), extStr.end(), extStr.begin(), ::tolower);
   for (const auto &ext : extensions) {
-    if (filename.size() >= ext.size() &&
-        filename.compare(filename.size() - ext.size(), ext.size(), ext) == 0) {
+    if (ext == extStr) {
       return true;
     }
   }
 
+  std::cout << "Warning: Not an image file: " << filename << "\n";
   return false;
 }
 
-void printSimilaritySets(const std::string &path, double threshold) {
+void sortImageVec(std::vector<int> &imageInd,
+                  const std::vector<Image> &imageFiles) {
+  // sort images by how relevant they are. These are all duplicates.
+  if (imageInd.size() <= 1)
+    return; // nothing to do
 
+  // If there is more than 1 image, then sort them by interestingness:
+  // 1. Higher resolution images are more interesting.
+  // 2. If two images have the same resolution, the one with more metadata is
+  // more interesting.
+  // 3. If two images have the same resolution and metadata, the one with the
+  // lower index is more interesting. (arbitrary)
+  std::sort(imageInd.begin(), imageInd.end(), [&imageFiles](int i1, int i2) {
+    const Image &img1 = imageFiles[i1];
+    const Image &img2 = imageFiles[i2];
+    if (img1.getResolution() != img2.getResolution()) {
+      return img1.getResolution() > img2.getResolution();
+    } else {
+      auto metadata1 = extractMetadata(img1.getPath());
+      auto metadata2 = extractMetadata(img2.getPath());
+      if (metadata1.size() != metadata2.size()) {
+        return metadata1.size() > metadata2.size();
+      } else {
+        return i1 < i2;
+      }
+    }
+  });
+}
+
+void printSimilaritySets(const std::string &path, const std::string &out,
+                         double threshold) {
   // List all image files under the given path.
   std::vector<Image> imageFiles;
   {
@@ -200,7 +246,7 @@ void printSimilaritySets(const std::string &path, double threshold) {
     std::cout << "Found " << imageFiles.size() << " image files.\n";
   }
 
-  // Compare every image with a random image in the existing sets.
+  // Compare every image with every other and fill in the TMatrix
   TMatrix<double> M(imageFiles.size());
   for (size_t i = 0; i < imageFiles.size() - 1; ++i) {
     const auto &img1 = imageFiles[i];
@@ -213,22 +259,68 @@ void printSimilaritySets(const std::string &path, double threshold) {
     }
   }
 
-  // Print similarities
+  std::vector<bool> imageDone(imageFiles.size(), false);
+  // Print similarities and copy to output folder
   {
-    TIME_BLOCK("Display Similarities");
+    TIME_BLOCK("Image Analysis");
     for (size_t i = 0; i < imageFiles.size(); i++) {
-      bool headerPrinted = false;
+      if (imageDone[i])
+        continue;
+
+      // vector containing indices of images similar to image i
+      std::vector<int> imageInd;
+      imageInd.push_back(i);
+
       for (size_t j = i + 1; j < imageFiles.size(); j++) {
         if (M(i, j) > threshold) {
-          if (!headerPrinted) {
-            std::cout << imageFiles[i].getPath() << std::endl;
-            headerPrinted = true;
-          }
-          std::cout << "    =" << imageFiles[j].getPath() << " : " << M(i, j)
-                    << std::endl;
-          compareMetadata(imageFiles[i].getPath(), imageFiles[j].getPath());
+          imageInd.push_back(j);
         }
       }
+
+      // sort images by similarity
+      sortImageVec(imageInd, imageFiles);
+
+      const std::string &base = imageFiles[imageInd[0]].getFilename();
+      const std::string &baseTarget = "image-" + std::to_string(imageInd[0]) +
+                                      imageFiles[imageInd[0]].getExtension();
+      // the first image is the most interesting one
+      // copy it to the output and the others to the dups folder
+      std::cout << "+ " << base << " (" + baseTarget + ")\n";
+      std::filesystem::create_hard_link(imageFiles[imageInd[0]].getPath(),
+                                        out + "/" + baseTarget);
+      imageDone[imageInd[0]] = true;
+
+      if (imageInd.size() > 1) {
+        std::string dupsFolder = out + "/dupsOf-" + std::to_string(imageInd[0]);
+        // create dups folder and copy the rest of the dups there
+        std::filesystem::create_directory(out + "/dupsOf-" +
+                                          std::to_string(imageInd[0]));
+        for (size_t j = 1; j < imageInd.size(); j++) {
+          std::string dupPath = imageFiles[imageInd[j]].getPath();
+          std::string dupTarget = "image-" + std::to_string(imageInd[j]) +
+                                  imageFiles[imageInd[j]].getExtension();
+          std::cout << "-> " << dupPath << " (" << dupTarget << ")\n";
+          std::filesystem::create_hard_link(dupPath,
+                                            dupsFolder + "/" + dupTarget);
+          imageDone[imageInd[j]] = true;
+        }
+      }
+    }
+  }
+
+  {
+    TIME_BLOCK("Verification");
+    size_t count = 0;
+    for (const auto &entry : fs::recursive_directory_iterator(
+             out, fs::directory_options::skip_permission_denied)) {
+      if (entry.is_regular_file() && !fs::is_symlink(entry) &&
+          isImageFile(entry.path().string())) {
+        count++;
+      }
+    }
+    if (count != imageFiles.size()) {
+      std::cerr << "ERROR: number of copied files do not match number of "
+                   "source files analysed.\n";
     }
   }
 }
@@ -257,9 +349,9 @@ int main(int argc, char *argv[]) {
     std::cout << "Similarity (hashed): " << similarityHashed << std::endl;
   } else {
     // Default mode
-    if (argc != 3) {
+    if (argc != 4) {
       std::cerr << "Error: Incorrect number of arguments for default mode.\n"
-                << "Usage: ImageSimilarity threshold images_path\n";
+                << "Usage: ImageSimilarity threshold images_path out_path\n";
       return 1;
     }
 
@@ -270,7 +362,8 @@ int main(int argc, char *argv[]) {
     }
 
     std::string path = argv[2];
-    printSimilaritySets(path, threshold);
+    std::string out = argv[3];
+    printSimilaritySets(path, out, threshold);
   }
 
   return 0;
