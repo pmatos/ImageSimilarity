@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <libexif/exif-data.h>
 #include <opencv2/core/mat.hpp>
@@ -181,8 +182,8 @@ double compareImagesHashed(const Image &img1, const Image &img2) {
 }
 
 bool isImageFile(const std::string &filename) {
-  std::vector<std::string> extensions = {".jpg", ".jpeg", ".png",
-                                         ".bmp", ".tiff", ".tif"};
+  std::vector<std::string> extensions = {".jpg",  ".jpeg", ".png", ".bmp",
+                                         ".tiff", ".tif",  ".gif"};
   std::filesystem::path p(filename);
   std::filesystem::path ext = p.extension();
 
@@ -233,6 +234,8 @@ void printSimilaritySets(const std::string &path, const std::string &out,
   // List all image files under the given path.
   std::vector<Image> imageFiles;
   {
+    std::filesystem::create_directories(out + "/non-image");
+    size_t nonimgCount = 0;
     TIME_BLOCK("File Loading");
     for (const auto &entry : fs::recursive_directory_iterator(
              path, fs::directory_options::skip_permission_denied)) {
@@ -241,6 +244,13 @@ void printSimilaritySets(const std::string &path, const std::string &out,
         if (imageFiles.size() % 100 == 0)
           std::cout << "Loaded " << imageFiles.size() << " image files.\n";
         imageFiles.emplace_back(entry.path().string());
+      } else if (entry.is_regular_file() && !fs::is_symlink(entry)) {
+        // copy file to output folder out/non-image
+        std::filesystem::create_hard_link(
+            entry.path().string(),
+            out + "/non-image/" + "nonimage" + std::to_string(nonimgCount) +
+                entry.path().filename().extension().string());
+        nonimgCount++;
       }
     }
     std::cout << "Found " << imageFiles.size() << " image files.\n";
@@ -255,7 +265,31 @@ void printSimilaritySets(const std::string &path, const std::string &out,
     for (size_t j = i + 1; j < imageFiles.size(); ++j) {
       const auto &img2 = imageFiles[j];
       double similarity = compareImagesHashed(img1, img2);
+      assert(similarity == compareImagesHashed(img2, img1));
       M(i, j) = similarity;
+    }
+  }
+
+  // output matrix as csv
+  {
+    TIME_BLOCK("Output Matrix");
+    std::ofstream csv(out + "/similarity.csv");
+    // output header
+    csv << ",";
+    for (size_t i = 0; i < imageFiles.size(); ++i) {
+      csv << imageFiles[i].getFilename() << ",";
+    }
+    csv << "\n";
+
+    for (size_t i = 0; i < imageFiles.size(); ++i) {
+      csv << imageFiles[i].getFilename() << ",";
+      for (size_t j = 0; j < imageFiles.size(); ++j) {
+        if (j <= i)
+          csv << ",";
+        else
+          csv << M(i, j) << ",";
+      }
+      csv << "\n";
     }
   }
 
@@ -285,7 +319,7 @@ void printSimilaritySets(const std::string &path, const std::string &out,
                                       imageFiles[imageInd[0]].getExtension();
       // the first image is the most interesting one
       // copy it to the output and the others to the dups folder
-      std::cout << "+ " << base << " (" + baseTarget + ")\n";
+      std::cout << "+ " << base << " (" + baseTarget + ")" << std::endl;
       std::filesystem::create_hard_link(imageFiles[imageInd[0]].getPath(),
                                         out + "/" + baseTarget);
       imageDone[imageInd[0]] = true;
@@ -299,7 +333,8 @@ void printSimilaritySets(const std::string &path, const std::string &out,
           std::string dupPath = imageFiles[imageInd[j]].getPath();
           std::string dupTarget = "image-" + std::to_string(imageInd[j]) +
                                   imageFiles[imageInd[j]].getExtension();
-          std::cout << "-> " << dupPath << " (" << dupTarget << ")\n";
+          std::cout << "-> " << dupPath << " (" << dupTarget << ")"
+                    << std::endl;
           std::filesystem::create_hard_link(dupPath,
                                             dupsFolder + "/" + dupTarget);
           imageDone[imageInd[j]] = true;
