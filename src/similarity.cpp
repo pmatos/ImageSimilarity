@@ -1,5 +1,6 @@
 #include <bitset>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -27,16 +28,22 @@ public:
 
   // Access element (i, j) in the lower triangular matrix
   T &operator()(size_t i, size_t j) {
-    assert(i < size && j < size && i != j && j > i);
-
-    return data[j * (j - 1) / 2 + i];
+    if (i < size && j < size && i != j && j > i)
+      return data[j * (j - 1) / 2 + i];
+    else {
+      // swap i and j and call again the operator
+      return (*this)(j, i);
+    }
   }
 
   // Access element (i, j) in the lower triangular matrix (const version)
   const T &operator()(size_t i, size_t j) const {
-    assert(i < size && j < size && i != j && j > i);
-
-    return data[j * (j + 1) / 2 + i];
+    if (i < size && j < size && i != j && j > i)
+      return data[j * (j + 1) / 2 + i];
+    else {
+      // swap i and j and call again the operator
+      return (*this)(j, i);
+    }
   }
 };
 
@@ -177,7 +184,8 @@ double compareImagesHashed(const Image &img1, const Image &img2) {
 
   int distance = hammingDistance(img1.getHash(), img2.getHash());
 
-  // Normalize the Hamming distance to a similarity score in the range [0, 1].
+  // Normalize the Hamming distance to a similarity score in the range [0,
+  // 1].
   return 1.0 - static_cast<double>(distance) / 64.0;
 }
 
@@ -208,10 +216,10 @@ void sortImageVec(std::vector<int> &imageInd,
 
   // If there is more than 1 image, then sort them by interestingness:
   // 1. Higher resolution images are more interesting.
-  // 2. If two images have the same resolution, the one with more metadata is
-  // more interesting.
-  // 3. If two images have the same resolution and metadata, the one with the
-  // lower index is more interesting. (arbitrary)
+  // 2. If two images have the same resolution, the one with more metadata
+  // is more interesting.
+  // 3. If two images have the same resolution and metadata, the one with
+  // the lower index is more interesting. (arbitrary)
   std::sort(imageInd.begin(), imageInd.end(), [&imageFiles](int i1, int i2) {
     const Image &img1 = imageFiles[i1];
     const Image &img2 = imageFiles[i2];
@@ -232,7 +240,7 @@ void sortImageVec(std::vector<int> &imageInd,
 void printSimilaritySets(const std::string &path, const std::string &out,
                          double threshold) {
   // List all image files under the given path.
-  std::vector<Image> imageFiles;
+  std::vector<Image> initImageFiles;
   {
     std::filesystem::create_directories(out + "/non-image");
     size_t nonimgCount = 0;
@@ -241,9 +249,9 @@ void printSimilaritySets(const std::string &path, const std::string &out,
              path, fs::directory_options::skip_permission_denied)) {
       if (entry.is_regular_file() && !fs::is_symlink(entry) &&
           isImageFile(entry.path().string())) {
-        if (imageFiles.size() % 100 == 0)
-          std::cout << "Loaded " << imageFiles.size() << " image files.\n";
-        imageFiles.emplace_back(entry.path().string());
+        if (initImageFiles.size() % 100 == 0)
+          std::cout << "Loaded " << initImageFiles.size() << " image files.\n";
+        initImageFiles.emplace_back(entry.path().string());
       } else if (entry.is_regular_file() && !fs::is_symlink(entry)) {
         // copy file to output folder out/non-image
         std::filesystem::create_hard_link(
@@ -253,10 +261,37 @@ void printSimilaritySets(const std::string &path, const std::string &out,
         nonimgCount++;
       }
     }
-    std::cout << "Found " << imageFiles.size() << " image files.\n";
+    std::cout << "Found " << initImageFiles.size() << " image files.\n";
+  }
+
+  // For debugging lets sort the files by path in the vector.
+  std::sort(initImageFiles.begin(), initImageFiles.end(),
+            [](const Image &img1, const Image &img2) {
+              return img1.getPath() < img2.getPath();
+            });
+
+  const std::vector<Image> &imageFiles = initImageFiles;
+
+  // Ensure no duplicates in imageFiles.
+  std::set<std::string> imageSet;
+  for (auto &Img : imageFiles) {
+    imageSet.insert(Img.getPath());
+  }
+  assert(imageSet.size() == imageFiles.size());
+
+  // List all file paths found to stdout
+  {
+    TIME_BLOCK("File Listing");
+    for (size_t i = 0; i < imageFiles.size(); ++i) {
+      std::cout << "* [" << i << "]: " << imageFiles[i].getPath() << "\n";
+    }
   }
 
   // Compare every image with every other and fill in the TMatrix
+  // ISSUE:
+  // There is a problem with the way we are doing things. Two images can be
+  // marked as duplicates of a third image, but not as duplicates of each other.
+  // dup(A, X) and dup(B, X) does not imply dup(A, B).
   TMatrix<double> M(imageFiles.size());
   for (size_t i = 0; i < imageFiles.size() - 1; ++i) {
     const auto &img1 = imageFiles[i];
@@ -293,19 +328,38 @@ void printSimilaritySets(const std::string &path, const std::string &out,
     }
   }
 
+  // an image index is marked as done if it was already processed
   std::vector<bool> imageDone(imageFiles.size(), false);
+
   // Print similarities and copy to output folder
   {
     TIME_BLOCK("Image Analysis");
     for (size_t i = 0; i < imageFiles.size(); i++) {
-      if (imageDone[i])
+      // Print loop headers and done images
+      std::cout << "Loop start. Images done: ";
+      for (size_t j = 0; j < imageDone.size(); j++) {
+        if (imageDone[j]) {
+          std::cout << j << " ";
+        }
+      }
+      std::cout << std::endl;
+
+      std::cout << "Checking if image " << i << " is done.\n";
+      if (imageDone[i]) {
+        std::cout << "= Seen image " << imageFiles[i].getPath() << " [" << i
+                  << "]"
+                  << " before.\n"; // this image has already been processed
         continue;
+      }
+      std::cout << "Not done - initiating processing\n";
 
       // vector containing indices of images similar to image i
       std::vector<int> imageInd;
       imageInd.push_back(i);
 
-      for (size_t j = i + 1; j < imageFiles.size(); j++) {
+      for (size_t j = 0; j < imageFiles.size(); j++) {
+        if (i == j)
+          continue; // skip diagonal
         if (M(i, j) > threshold) {
           imageInd.push_back(j);
         }
@@ -314,30 +368,61 @@ void printSimilaritySets(const std::string &path, const std::string &out,
       // sort images by similarity
       sortImageVec(imageInd, imageFiles);
 
-      const std::string &base = imageFiles[imageInd[0]].getFilename();
-      const std::string &baseTarget = "image-" + std::to_string(imageInd[0]) +
-                                      imageFiles[imageInd[0]].getExtension();
+      // print imageInd
+      std::cout << "Similar images to " << i << ": ";
+      for (size_t j = 0; j < imageInd.size(); j++) {
+        std::cout << imageInd[j] << " ";
+      }
+      std::cout << std::endl;
+
+      // Remove any images from imageInd that have already been processed.
+      for (auto it = imageInd.begin(); it != imageInd.end();) {
+        if (imageDone[*it]) {
+          std::cout << "=== Removing image " << *it << " from imageInd.\n";
+          it = imageInd.erase(it);
+        } else {
+          ++it;
+        }
+      }
+
+      const size_t mainIdx = imageInd[0];
+      const std::string &base = imageFiles[mainIdx].getFilename();
+      const std::string &baseTarget = "image-" + std::to_string(mainIdx) +
+                                      imageFiles[mainIdx].getExtension();
       // the first image is the most interesting one
       // copy it to the output and the others to the dups folder
       std::cout << "+ " << base << " (" + baseTarget + ")" << std::endl;
-      std::filesystem::create_hard_link(imageFiles[imageInd[0]].getPath(),
+      std::filesystem::create_hard_link(imageFiles[mainIdx].getPath(),
                                         out + "/" + baseTarget);
-      imageDone[imageInd[0]] = true;
+      std::cout << "= Marking image " << imageFiles[mainIdx].getPath() << " ["
+                << mainIdx << "]"
+                << " as done.\n";
+      imageDone[mainIdx] = true;
 
       if (imageInd.size() > 1) {
-        std::string dupsFolder = out + "/dupsOf-" + std::to_string(imageInd[0]);
+        std::string dupsFolder = out + "/dupsOf-" + std::to_string(mainIdx);
         // create dups folder and copy the rest of the dups there
         std::filesystem::create_directory(out + "/dupsOf-" +
-                                          std::to_string(imageInd[0]));
+                                          std::to_string(mainIdx));
+
+        // Copy original to dups folder as well.
+        std::filesystem::create_hard_link(imageFiles[mainIdx].getPath(),
+                                          dupsFolder + "/ORIGINAL-" +
+                                              baseTarget);
+
         for (size_t j = 1; j < imageInd.size(); j++) {
-          std::string dupPath = imageFiles[imageInd[j]].getPath();
-          std::string dupTarget = "image-" + std::to_string(imageInd[j]) +
-                                  imageFiles[imageInd[j]].getExtension();
-          std::cout << "-> " << dupPath << " (" << dupTarget << ")"
-                    << std::endl;
+          const size_t dupIdx = imageInd[j];
+          std::string dupPath = imageFiles[dupIdx].getPath();
+          std::string dupTarget = "image-" + std::to_string(dupIdx) +
+                                  imageFiles[dupIdx].getExtension();
+          std::cout << "-> " << dupPath << " (" << dupTarget << "), "
+                    << M(mainIdx, dupIdx) << std::endl;
           std::filesystem::create_hard_link(dupPath,
                                             dupsFolder + "/" + dupTarget);
-          imageDone[imageInd[j]] = true;
+          std::cout << "= Marking image " << imageFiles[dupIdx].getPath()
+                    << " [" << dupIdx << "]"
+                    << " as done.\n";
+          imageDone[dupIdx] = true;
         }
       }
     }
